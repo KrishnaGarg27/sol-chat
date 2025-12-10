@@ -9,7 +9,7 @@ const ChatMessageSchema = new mongoose.Schema(
     },
     role: { type: String, enum: ["user", "assistant"] },
     model: { type: String },
-    content: { type: String },
+    content: { type: String, default: "" },
   },
   { timestamps: true }
 );

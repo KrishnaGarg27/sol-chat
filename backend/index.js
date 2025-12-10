@@ -9,6 +9,7 @@ const session = require("express-session");
 const { MongoStore } = require("connect-mongo");
 
 const authRoutes = require("./routes/authRoutes");
+const chatRoutes = require("./routes/chatRoutes");
 
 mongoose
   .connect(process.env.MONGODB_URI)
@@ -35,5 +36,6 @@ app.use(
 app.use(express.json());
 
 app.use("/api/auth", authRoutes);
+app.use("/api/chat", chatRoutes);
 
 app.listen(3000, () => console.log("Listening on Port 3000"));
