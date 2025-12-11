@@ -3,6 +3,10 @@ const router = express.Router();
 const ChatSession = require("../models/ChatSession");
 const ChatMessage = require("../models/ChatMessage");
 const { isAuthenticated } = require("../middlewares/authMiddlewares");
+const {
+  chatSessionValid,
+  queryMessageValid,
+} = require("../middlewares/chatMiddlewares");
 const { streamFromModel } = require("../lib/streamFromModel");
 
 router.post("/sessions", async (req, res) => {
@@ -33,23 +37,9 @@ router.get("/sessions", isAuthenticated, async (req, res) => {
   });
 });
 
-router.post("/session/:chatSessionId", async (req, res) => {
+router.post("/session/:chatSessionId", chatSessionValid, async (req, res) => {
   const chatSessionId = req.params.chatSessionId;
   const { query } = req.body;
-
-  const chatSession = await ChatSession.findById(chatSessionId);
-
-  if (!chatSession) {
-    return res.status(404).json({ error: "Chat Session does not exist" });
-  }
-  if (
-    chatSession.userId &&
-    (!req.session || req.session.userId !== chatSession.userId.toString())
-  ) {
-    return res.status(401).json({
-      error: "User not authorised to post query in this chat session",
-    });
-  }
 
   const queryMessage = new ChatMessage({
     chatSessionId,
@@ -61,21 +51,8 @@ router.post("/session/:chatSessionId", async (req, res) => {
   res.status(202).json({ queryId: queryMessage._id });
 });
 
-router.get("/session/:chatSessionId", async (req, res) => {
+router.get("/session/:chatSessionId", chatSessionValid, async (req, res) => {
   const chatSessionId = req.params.chatSessionId;
-
-  const chatSession = await ChatSession.findById(chatSessionId);
-  if (!chatSession) {
-    return res.status(404).json({ error: "Chat Session does not exist" });
-  }
-  if (
-    chatSession.userId &&
-    (!req.session || req.session.userId !== chatSession.userId.toString())
-  ) {
-    return res.status(401).json({
-      error: "User not authorised to view chat",
-    });
-  }
 
   const chatMessages = await ChatMessage.find({ chatSessionId }).sort({
     createdAt: 1,
@@ -89,25 +66,14 @@ router.get("/session/:chatSessionId", async (req, res) => {
   res.status(200).json({ messages });
 });
 
-router.get("/sse/:queryId", async (req, res) => {
+router.get("/sse/:queryId", queryMessageValid, async (req, res) => {
   const queryId = req.params.queryId;
+  const queryMessage = req.queryMessage;
+  const chatSession = req.chatSession;
 
-  const queryMessage = await ChatMessage.findById(queryId);
-  if (
-    !queryMessage ||
-    queryMessage.role !== "user" ||
-    queryMessage.status === "completed"
-  ) {
-    return res.status(404).end();
-  }
-
-  const chatSession = await ChatSession.findById(queryMessage.chatSessionId);
-  if (
-    chatSession.userId &&
-    (!req.session || req.session.userId !== chatSession.userId.toString())
-  ) {
-    return res.status(401).end();
-  }
+  const chatMessages = await ChatMessage.find({
+    chatSessionId: chatSession._id,
+  }).sort({ createdAt: 1 });
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -125,7 +91,6 @@ router.get("/sse/:queryId", async (req, res) => {
   }
 
   const models = chatSession.models;
-  const query = queryMessage.content;
   let activeStreams = models.length;
   const assistantMessages = {};
 
@@ -133,7 +98,16 @@ router.get("/sse/:queryId", async (req, res) => {
     assistantMessages[model] = "";
     (async () => {
       try {
-        await streamFromModel(model, query, (token) => {
+        const messages = chatMessages
+          .filter((message) => !message.model || message.model === model)
+          .map((message) => ({
+            role: message.role,
+            content: message.content,
+          }));
+        if (messages.length > 10) {
+          messages = messages.slice(-10);
+        }
+        await streamFromModel(model, messages, (token) => {
           assistantMessages[model] += token;
 
           sendChunk({
@@ -151,7 +125,7 @@ router.get("/sse/:queryId", async (req, res) => {
 
       if (activeStreams === 0) {
         queryMessage.status = "completed";
-        queryMessage.save();
+        await queryMessage.save();
         for (const model of chatSession.models) {
           const assistantMessage = new ChatMessage({
             chatSessionId: chatSession._id,
