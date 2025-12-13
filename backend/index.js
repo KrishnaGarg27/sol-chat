@@ -1,9 +1,5 @@
-/**
- * Sol-Chat Backend
- * Pay-per-request multi LLM application with Solana x402 payments
- */
+// Sol-Chat Backend - Pay-per-request multi-LLM with Solana payments
 
-// Load environment variables first
 if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
 }
@@ -15,15 +11,11 @@ const MongoStore = require('connect-mongo');
 const helmet = require('helmet');
 const passport = require('passport');
 
-// Config
 const env = require('./config/env');
 const { SESSION_EXPIRY_DAYS } = require('./config/constants');
-
-// Services
 const solanaService = require('./lib/solana');
 const { initializePassport } = require('./lib/passport');
 
-// Routes
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const payRoutes = require('./routes/payRoutes');
@@ -31,20 +23,17 @@ const transactionRoutes = require('./routes/transactionRoutes');
 
 const app = express();
 
-/**
- * Initialize all services
- */
-async function initializeServices() {
-  // Connect to MongoDB
+async function init() {
+  // MongoDB
   try {
     await mongoose.connect(env.MONGODB_URI);
     console.log('MongoDB connected');
-  } catch (error) {
-    console.error('MongoDB connection failed:', error.message);
+  } catch (err) {
+    console.error('MongoDB failed:', err.message);
     process.exit(1);
   }
 
-  // Initialize Solana service
+  // Solana
   try {
     solanaService.initialize({
       SOLANA_RPC_URL: env.SOLANA_RPC_URL,
@@ -52,22 +41,16 @@ async function initializeServices() {
       CREDITS_TOKEN_MINT: env.CREDITS_TOKEN_MINT,
       TREASURY_WALLET: env.TREASURY_WALLET,
     });
-    console.log('Solana service initialized');
-  } catch (error) {
-    console.error('Solana service initialization failed:', error.message);
-    // Continue without Solana - payments won't work but chat might
+    console.log('Solana initialized');
+  } catch (err) {
+    console.error('Solana failed:', err.message);
   }
 
-  // Initialize Passport OAuth
+  // Passport
   initializePassport(env);
-  console.log('Passport OAuth initialized');
 }
 
-/**
- * Configure Express middleware
- */
-function configureMiddleware() {
-  // Security headers
+function setupMiddleware() {
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
@@ -79,133 +62,78 @@ function configureMiddleware() {
     },
   }));
 
-  // CORS for frontend
+  // CORS
   app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', env.FRONTEND_URL);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    
-    if (req.method === 'OPTIONS') {
-      return res.status(200).end();
-    }
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
   });
 
-  // Session configuration
-  app.use(
-    session({
-      secret: env.SESSION_SECRET,
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        maxAge: 1000 * 60 * 60 * 24 * SESSION_EXPIRY_DAYS,
-        httpOnly: true,
-        secure: env.NODE_ENV === 'production',
-        sameSite: env.NODE_ENV === 'production' ? 'strict' : 'lax',
-      },
-      store: MongoStore.create({
-        mongoUrl: env.MONGODB_URI,
-        collectionName: 'sessions',
-        ttl: 60 * 60 * 24 * SESSION_EXPIRY_DAYS,
-        touchAfter: 24 * 60 * 60,
-      }),
-    })
-  );
+  // Session
+  app.use(session({
+    secret: env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      maxAge: 1000 * 60 * 60 * 24 * SESSION_EXPIRY_DAYS,
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'strict' : 'lax',
+    },
+    store: MongoStore.create({
+      mongoUrl: env.MONGODB_URI,
+      collectionName: 'sessions',
+      ttl: 60 * 60 * 24 * SESSION_EXPIRY_DAYS,
+    }),
+  }));
 
-  // Passport initialization
   app.use(passport.initialize());
-
-  // Body parsing
   app.use(express.json({ limit: '1mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 }
 
-/**
- * Configure routes
- */
-function configureRoutes() {
-  // Health check
+function setupRoutes() {
   app.get('/health', (req, res) => {
-    res.status(200).json({
+    res.json({
       status: 'ok',
-      timestamp: new Date().toISOString(),
-      services: {
-        mongodb: mongoose.connection.readyState === 1,
-        solana: solanaService.initialized,
-      },
+      mongodb: mongoose.connection.readyState === 1,
+      solana: solanaService.initialized,
     });
   });
 
-  // API routes
   app.use('/api/auth', authRoutes);
   app.use('/api/chat', chatRoutes);
   app.use('/api/pay', payRoutes);
   app.use('/api/transactions', transactionRoutes);
 
-  // 404 handler
-  app.use((req, res) => {
-    res.status(404).json({
-      error: 'Not found',
-      code: 'NOT_FOUND',
-      path: req.path,
-    });
-  });
+  app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
-  // Global error handler
   app.use((err, req, res, next) => {
-    console.error('Unhandled error:', err);
-
-    const message = env.NODE_ENV === 'production' 
-      ? 'Internal server error' 
-      : err.message;
-
-    res.status(err.status || 500).json({
-      error: message,
-      code: 'INTERNAL_ERROR',
-      ...(env.NODE_ENV !== 'production' && { stack: err.stack }),
-    });
+    console.error('Error:', err);
+    res.status(500).json({ error: env.NODE_ENV === 'production' ? 'Server error' : err.message });
   });
 }
 
-/**
- * Graceful shutdown handler
- */
-function setupGracefulShutdown() {
-  const shutdown = async (signal) => {
-    console.log(`\n${signal} received. Starting graceful shutdown...`);
+async function start() {
+  await init();
+  setupMiddleware();
+  setupRoutes();
 
-    // Close MongoDB connection
+  process.on('SIGTERM', async () => {
     await mongoose.connection.close();
-    console.log('MongoDB connection closed');
-
     process.exit(0);
-  };
+  });
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  app.listen(env.PORT, () => {
+    console.log(`\nSol-Chat running on port ${env.PORT}`);
+    console.log(`Environment: ${env.NODE_ENV}`);
+    console.log(`Solana: ${env.SOLANA_NETWORK}`);
+  });
 }
 
-/**
- * Start the server
- */
-async function startServer() {
-  try {
-    await initializeServices();
-    configureMiddleware();
-    configureRoutes();
-    setupGracefulShutdown();
-
-    app.listen(env.PORT, () => {
-      console.log(`\n  Sol-Chat backend running on port ${env.PORT}`);
-      console.log(`   Environment: ${env.NODE_ENV}`);
-      console.log(`   Solana Network: ${env.SOLANA_NETWORK}`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
-}
-
-// Start the application
-startServer();
+start().catch(err => {
+  console.error('Startup failed:', err);
+  process.exit(1);
+});

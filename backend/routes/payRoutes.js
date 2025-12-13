@@ -1,271 +1,156 @@
-/**
- * Payment routes for credit purchase and verification
- */
+// Payment routes
 
 const express = require('express');
 const router = express.Router();
 const Joi = require('joi');
 
-// Models
-const User = require('../models/User');
-const Guest = require('../models/Guest');
 const Transaction = require('../models/Transaction');
-
-// Middlewares
 const { validateInput } = require('../middlewares/inputValidationMiddlewares');
 const { ensureSession, requireWallet } = require('../middlewares/authMiddlewares');
-
-// Lib
 const x402 = require('../lib/x402');
 const solanaService = require('../lib/solana');
 const { CREDIT_PRICE_LAMPORTS, MIN_CREDIT_PURCHASE } = require('../config/constants');
 const env = require('../config/env');
 
-// Validation schemas
-const verifyPaymentSchema = Joi.object({
+const verifySchema = Joi.object({
   signature: Joi.string().required(),
   payerWallet: Joi.string().required(),
-}).required();
+});
 
-const purchaseCreditsSchema = Joi.object({
+const purchaseSchema = Joi.object({
   credits: Joi.number().integer().min(MIN_CREDIT_PURCHASE).required(),
-}).required();
+});
 
-/**
- * GET /balance - Get current credit balance
- */
 router.get('/balance', ensureSession, async (req, res) => {
   try {
-    const account = req.account;
-    
-    if (!account.solanaWallet) {
-      return res.status(200).json({
-        balance: 0,
-        hasWallet: false,
-        message: 'Connect wallet to view balance',
-      });
+    if (!req.account.solanaWallet) {
+      return res.json({ balance: 0, hasWallet: false });
     }
-    
-    const balance = await solanaService.getCreditBalance(account.solanaWallet);
-    
-    res.status(200).json({
-      balance,
-      hasWallet: true,
-      wallet: account.solanaWallet,
-    });
+    const balance = await solanaService.getCreditBalance(req.account.solanaWallet);
+    res.json({ balance, hasWallet: true, wallet: req.account.solanaWallet });
   } catch (error) {
-    console.error('Get balance error:', error);
-    res.status(500).json({
-      error: 'Failed to get balance',
-      code: 'BALANCE_ERROR',
-    });
+    console.error('Balance error:', error);
+    res.status(500).json({ error: 'Failed to get balance', code: 'BALANCE_ERROR' });
   }
 });
 
-/**
- * POST /purchase - Initiate credit purchase (returns payment details)
- */
-router.post(
-  '/purchase',
-  ensureSession,
-  requireWallet,
-  validateInput(purchaseCreditsSchema),
-  async (req, res) => {
-    try {
-      const account = req.account;
-      const accountType = req.accountType;
-      const { credits } = req.body;
-      
-      // Create payment request
-      const paymentRequest = x402.createPaymentRequest({
-        creditsRequired: credits,
-        userId: account._id.toString(),
-        userType: accountType,
-        userWallet: account.solanaWallet,
-      });
-      
-      // Store pending payment
-      account.pendingPayment = {
-        reference: paymentRequest.reference,
-        amount: parseInt(paymentRequest.amount),
-        credits,
-        createdAt: new Date(),
-        expiresAt: new Date(paymentRequest.expiresAt),
-      };
-      await account.save();
-      
-      // Create pending transaction record
-      const transaction = new Transaction({
-        [accountType === 'user' ? 'userId' : 'guestId']: account._id,
-        type: 'credit_purchase',
-        creditsAmount: credits,
-        paymentReference: paymentRequest.reference,
-        status: 'pending',
-        solana: {
-          recipientWallet: paymentRequest.recipient,
-          amountLamports: parseInt(paymentRequest.amount),
-          network: env.SOLANA_NETWORK,
-        },
-      });
-      await transaction.save();
-      
-      res.status(200).json({
-        reference: paymentRequest.reference,
-        credits,
-        payment: {
-          network: paymentRequest.network,
-          recipient: paymentRequest.recipient,
-          amount: paymentRequest.amount,
-          currency: 'lamports',
-          amountSOL: (parseInt(paymentRequest.amount) / 1e9).toFixed(9),
-          memo: paymentRequest.memo,
-        },
-        expiresAt: paymentRequest.expiresAt,
-        verifyUrl: `/api/pay/verify/${paymentRequest.reference}`,
-      });
-    } catch (error) {
-      console.error('Purchase error:', error);
-      res.status(500).json({
-        error: 'Failed to initiate purchase',
-        code: 'PURCHASE_ERROR',
-      });
-    }
+router.post('/purchase', ensureSession, requireWallet, validateInput(purchaseSchema), async (req, res) => {
+  try {
+    const { account, accountType } = req;
+    const { credits } = req.body;
+    
+    const paymentRequest = x402.createPaymentRequest({
+      creditsRequired: credits,
+      userId: account._id.toString(),
+      userType: accountType,
+      userWallet: account.solanaWallet,
+    });
+    
+    account.pendingPayment = {
+      reference: paymentRequest.reference,
+      amount: parseInt(paymentRequest.amount),
+      credits,
+      createdAt: new Date(),
+      expiresAt: new Date(paymentRequest.expiresAt),
+    };
+    await account.save();
+    
+    await new Transaction({
+      [accountType === 'user' ? 'userId' : 'guestId']: account._id,
+      type: 'credit_purchase',
+      creditsAmount: credits,
+      paymentReference: paymentRequest.reference,
+      status: 'pending',
+      solana: {
+        recipientWallet: paymentRequest.recipient,
+        amountLamports: parseInt(paymentRequest.amount),
+        network: env.SOLANA_NETWORK,
+      },
+    }).save();
+    
+    res.json({
+      reference: paymentRequest.reference,
+      credits,
+      payment: {
+        network: paymentRequest.network,
+        recipient: paymentRequest.recipient,
+        amount: paymentRequest.amount,
+        amountSOL: (parseInt(paymentRequest.amount) / 1e9).toFixed(9),
+        memo: paymentRequest.memo,
+      },
+      expiresAt: paymentRequest.expiresAt,
+      verifyUrl: `/api/pay/verify/${paymentRequest.reference}`,
+    });
+  } catch (error) {
+    console.error('Purchase error:', error);
+    res.status(500).json({ error: 'Purchase failed', code: 'PURCHASE_ERROR' });
   }
-);
+});
 
-/**
- * POST /verify/:reference - Verify payment and mint credits
- */
-router.post(
-  '/verify/:reference',
-  ensureSession,
-  validateInput(verifyPaymentSchema),
-  async (req, res) => {
-    try {
-      const { reference } = req.params;
-      const { signature, payerWallet } = req.body;
-      const account = req.account;
-      const accountType = req.accountType;
-      
-      // Verify payment with x402 facilitator
-      const verification = await x402.verifyPayment(reference, signature, payerWallet);
-      
-      if (!verification.success) {
-        // Update transaction status
-        await Transaction.findOneAndUpdate(
-          { paymentReference: reference },
-          { 
-            status: 'failed',
-            error: verification.error,
-          }
-        );
-        
-        return res.status(400).json({
-          error: verification.error,
-          code: 'VERIFICATION_FAILED',
-        });
-      }
-      
-      // Verify the payment belongs to this user
-      if (verification.userId !== account._id.toString()) {
-        return res.status(403).json({
-          error: 'Payment reference does not belong to this account',
-          code: 'PAYMENT_MISMATCH',
-        });
-      }
-      
-      // Mint credits to user's wallet
-      const mintSignature = await solanaService.mintCredits(
-        account.solanaWallet,
-        verification.credits
-      );
-      
-      // Get new balance
-      const newBalance = await solanaService.getCreditBalance(account.solanaWallet);
-      
-      // Update transaction
-      await Transaction.findOneAndUpdate(
-        { paymentReference: reference },
-        {
-          status: 'completed',
-          creditsBalanceAfter: newBalance,
-          'solana.signature': signature,
-          'solana.payerWallet': payerWallet,
-          'solana.confirmedAt': new Date(),
-        }
-      );
-      
-      // Clear pending payment
-      account.pendingPayment = null;
-      await account.save();
-      
-      res.status(200).json({
-        success: true,
-        creditsAdded: verification.credits,
-        newBalance,
-        mintTransaction: mintSignature,
-        explorerUrl: `https://explorer.solana.com/tx/${mintSignature}?cluster=${env.SOLANA_NETWORK}`,
-      });
-    } catch (error) {
-      console.error('Verify payment error:', error);
-      res.status(500).json({
-        error: 'Failed to verify payment',
-        code: 'VERIFY_ERROR',
-      });
-    }
-  }
-);
-
-/**
- * GET /verify/:reference - Check payment status
- */
-router.get('/verify/:reference', async (req, res) => {
+router.post('/verify/:reference', ensureSession, validateInput(verifySchema), async (req, res) => {
   try {
     const { reference } = req.params;
+    const { signature, payerWallet } = req.body;
+    const { account } = req;
     
-    const pendingPayment = x402.getPendingPayment(reference);
+    const result = await x402.verifyPayment(reference, signature, payerWallet);
     
-    if (!pendingPayment) {
-      return res.status(404).json({
-        error: 'Payment reference not found',
-        code: 'REFERENCE_NOT_FOUND',
-      });
+    if (!result.success) {
+      await Transaction.findOneAndUpdate({ paymentReference: reference }, { status: 'failed', error: result.error });
+      return res.status(400).json({ error: result.error, code: 'VERIFICATION_FAILED' });
     }
     
-    // Get transaction record
-    const transaction = await Transaction.findOne({ paymentReference: reference });
+    if (result.userId !== account._id.toString()) {
+      return res.status(403).json({ error: 'Payment mismatch', code: 'PAYMENT_MISMATCH' });
+    }
     
-    res.status(200).json({
-      reference,
-      status: pendingPayment.status,
-      credits: pendingPayment.creditsRequired,
-      expiresAt: pendingPayment.expiresAt,
-      transaction: transaction ? {
-        id: transaction._id,
-        status: transaction.status,
-        createdAt: transaction.createdAt,
-        solanaSignature: transaction.solana?.signature,
-        explorerUrl: transaction.explorerUrl,
-      } : null,
+    const mintSig = await solanaService.mintCredits(account.solanaWallet, result.credits);
+    const newBalance = await solanaService.getCreditBalance(account.solanaWallet);
+    
+    await Transaction.findOneAndUpdate(
+      { paymentReference: reference },
+      { status: 'completed', creditsBalanceAfter: newBalance, 'solana.signature': signature, 'solana.payerWallet': payerWallet, 'solana.confirmedAt': new Date() }
+    );
+    
+    account.pendingPayment = null;
+    await account.save();
+    
+    res.json({
+      success: true,
+      creditsAdded: result.credits,
+      newBalance,
+      mintTransaction: mintSig,
+      explorerUrl: `https://explorer.solana.com/tx/${mintSig}?cluster=${env.SOLANA_NETWORK}`,
     });
   } catch (error) {
-    console.error('Check payment status error:', error);
-    res.status(500).json({
-      error: 'Failed to check payment status',
-      code: 'STATUS_ERROR',
-    });
+    console.error('Verify error:', error);
+    res.status(500).json({ error: 'Verification failed', code: 'VERIFY_ERROR' });
   }
 });
 
-/**
- * GET /pricing - Get credit pricing info
- */
+router.get('/verify/:reference', async (req, res) => {
+  try {
+    const payment = x402.getPendingPayment(req.params.reference);
+    if (!payment) return res.status(404).json({ error: 'Not found', code: 'REFERENCE_NOT_FOUND' });
+    
+    const tx = await Transaction.findOne({ paymentReference: req.params.reference });
+    
+    res.json({
+      reference: req.params.reference,
+      status: payment.status,
+      credits: payment.creditsRequired,
+      expiresAt: payment.expiresAt,
+      transaction: tx ? { id: tx._id, status: tx.status, createdAt: tx.createdAt } : null,
+    });
+  } catch (error) {
+    console.error('Status check error:', error);
+    res.status(500).json({ error: 'Status check failed', code: 'STATUS_ERROR' });
+  }
+});
+
 router.get('/pricing', (req, res) => {
-  res.status(200).json({
-    pricePerCredit: {
-      lamports: CREDIT_PRICE_LAMPORTS,
-      sol: CREDIT_PRICE_LAMPORTS / 1e9,
-    },
+  res.json({
+    pricePerCredit: { lamports: CREDIT_PRICE_LAMPORTS, sol: CREDIT_PRICE_LAMPORTS / 1e9 },
     minPurchase: MIN_CREDIT_PURCHASE,
     network: env.SOLANA_NETWORK,
     treasuryWallet: env.TREASURY_WALLET,
@@ -273,4 +158,3 @@ router.get('/pricing', (req, res) => {
 });
 
 module.exports = router;
-

@@ -1,103 +1,70 @@
-/**
- * Chat routes for managing chat sessions, queries, and streaming
- */
+// Chat routes
 
 const express = require('express');
 const router = express.Router();
 const Joi = require('joi');
 
-// Models
 const ChatSession = require('../models/ChatSession');
 const ChatMessage = require('../models/ChatMessage');
 const Transaction = require('../models/Transaction');
 
-// Middlewares
 const { isAuthenticated, ensureSession } = require('../middlewares/authMiddlewares');
 const { chatSessionValid, queryMessageValid } = require('../middlewares/chatMiddlewares');
 const { checkCredits, deductCredits } = require('../middlewares/paymentMiddlewares');
 const { validateInput } = require('../middlewares/inputValidationMiddlewares');
 
-// Lib
 const { streamFromModel } = require('../lib/streamFromModel');
 const { titleFromModel } = require('../lib/titleFromModel');
 const streamManager = require('../lib/streamManager');
 const { MODELS } = require('../config/constants');
 
-// Validation schemas
 const createSessionSchema = Joi.object({
-  models: Joi.array()
-    .items(Joi.string().valid(...MODELS))
-    .min(1)
-    .required(),
-}).required();
+  models: Joi.array().items(Joi.string().valid(...MODELS)).min(1).required(),
+});
 
 const querySchema = Joi.object({
   query: Joi.string().min(1).max(10000).required(),
-}).required();
+});
 
-/**
- * POST /sessions - Create a new chat session
- */
-router.post(
-  '/sessions',
-  validateInput(createSessionSchema),
-  async (req, res) => {
-    try {
-      const { models } = req.body;
-      
-      const chatSession = new ChatSession({
-        models,
-        userId: req.session?.userId || null,
-      });
-      await chatSession.save();
-      
-      res.status(201).json({
-        chatSessionId: chatSession._id,
-        models: chatSession.models,
-      });
-    } catch (error) {
-      console.error('Create session error:', error);
-      res.status(500).json({ 
-        error: 'Failed to create chat session',
-        code: 'CREATE_SESSION_ERROR',
-      });
-    }
+// Create session
+router.post('/sessions', validateInput(createSessionSchema), async (req, res) => {
+  try {
+    const chatSession = new ChatSession({
+      models: req.body.models,
+      userId: req.session?.userId || null,
+    });
+    await chatSession.save();
+    res.status(201).json({ chatSessionId: chatSession._id, models: chatSession.models });
+  } catch (error) {
+    console.error('Create session error:', error);
+    res.status(500).json({ error: 'Failed to create session', code: 'CREATE_SESSION_ERROR' });
   }
-);
+});
 
-/**
- * GET /sessions - Get all chat sessions for authenticated user
- */
+// List user sessions
 router.get('/sessions', isAuthenticated, async (req, res) => {
   try {
-    const chatSessions = await ChatSession.find({ userId: req.user._id })
+    const sessions = await ChatSession.find({ userId: req.user._id })
       .sort({ updatedAt: -1 })
       .select('_id title models createdAt updatedAt');
     
-    res.status(200).json({
-      sessions: chatSessions.map(session => ({
-        chatSessionId: session._id,
-        title: session.title,
-        models: session.models,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
+    res.json({
+      sessions: sessions.map(s => ({
+        chatSessionId: s._id,
+        title: s.title,
+        models: s.models,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
       })),
     });
   } catch (error) {
     console.error('Get sessions error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get chat sessions',
-      code: 'GET_SESSIONS_ERROR',
-    });
+    res.status(500).json({ error: 'Failed to get sessions', code: 'GET_SESSIONS_ERROR' });
   }
 });
 
-/**
- * POST /session/:chatSessionId - Submit a query to the chat session
- * Returns 402 if insufficient credits
- */
-router.post(
-  '/session/:chatSessionId',
+// Submit query (returns 402 if no credits)
+router.post('/session/:chatSessionId',
   validateInput(querySchema),
   chatSessionValid,
   ensureSession,
@@ -105,23 +72,15 @@ router.post(
   async (req, res) => {
     try {
       const { chatSessionId } = req.params;
-      const chatSession = req.chatSession;
+      const { chatSession, creditsRequired, account, accountType } = req;
       const { query } = req.body;
-      const creditsRequired = req.creditsRequired;
-      const account = req.account;
-      const accountType = req.accountType;
       
-      // Generate title if first message
+      // Generate title for first message
       if (!chatSession.title) {
-        try {
-          chatSession.title = await titleFromModel(query);
-          await chatSession.save();
-        } catch (titleError) {
-          console.error('Title generation error:', titleError);
-        }
+        chatSession.title = await titleFromModel(query).catch(() => 'New Chat');
+        await chatSession.save();
       }
       
-      // Create query message
       const queryMessage = new ChatMessage({
         chatSessionId,
         role: 'user',
@@ -130,7 +89,6 @@ router.post(
       });
       await queryMessage.save();
       
-      // Start background streaming
       startBackgroundStream(queryMessage, chatSession, account, accountType, creditsRequired);
       
       res.status(202).json({
@@ -141,30 +99,22 @@ router.post(
       });
     } catch (error) {
       console.error('Submit query error:', error);
-      res.status(500).json({ 
-        error: 'Failed to submit query',
-        code: 'SUBMIT_QUERY_ERROR',
-      });
+      res.status(500).json({ error: 'Failed to submit query', code: 'SUBMIT_QUERY_ERROR' });
     }
   }
 );
 
-/**
- * GET /session/:chatSessionId - Get chat session history
- */
+// Get session history
 router.get('/session/:chatSessionId', chatSessionValid, async (req, res) => {
   try {
-    const chatSessionId = req.params.chatSessionId;
-    const chatSession = req.chatSession;
-    
-    const messages = await ChatMessage.find({ chatSessionId })
+    const messages = await ChatMessage.find({ chatSessionId: req.params.chatSessionId })
       .sort({ createdAt: 1 })
       .select('role model content status createdAt');
     
-    res.status(200).json({
-      chatSessionId,
-      title: chatSession.title,
-      models: chatSession.models,
+    res.json({
+      chatSessionId: req.params.chatSessionId,
+      title: req.chatSession.title,
+      models: req.chatSession.models,
       messages: messages.map(m => ({
         role: m.role,
         model: m.model || null,
@@ -175,143 +125,74 @@ router.get('/session/:chatSessionId', chatSessionValid, async (req, res) => {
     });
   } catch (error) {
     console.error('Get session error:', error);
-    res.status(500).json({ 
-      error: 'Failed to get chat session',
-      code: 'GET_SESSION_ERROR',
-    });
+    res.status(500).json({ error: 'Failed to get session', code: 'GET_SESSION_ERROR' });
   }
 });
 
-/**
- * GET /sse/:queryId - Stream responses for a query via Server-Sent Events
- */
+// SSE stream
 router.get('/sse/:queryId', queryMessageValid, async (req, res) => {
-  const queryId = req.params.queryId;
-  const queryMessage = req.queryMessage;
-  const chatSession = req.chatSession;
+  const { queryId } = req.params;
+  const { queryMessage, chatSession } = req;
   
-  // Set up SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
   
-  // Helper functions
-  const sendEvent = (event, data) => {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  };
+  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   
-  // Send init event
-  sendEvent('init', { 
-    queryId,
-    chatSessionId: chatSession._id,
-    models: chatSession.models,
-  });
+  send('init', { queryId, chatSessionId: chatSession._id, models: chatSession.models });
   
-  // If query is already completed, send cached responses
+  // Already completed - send cached
   if (queryMessage.status === 'completed') {
     const responses = await ChatMessage.find({ queryId });
-    
-    for (const response of responses) {
-      sendEvent('chunk', {
-        queryId,
-        model: response.model,
-        token: response.content,
-        isComplete: true,
-      });
-    }
-    
-    sendEvent('done', { message: 'Stream completed' });
-    res.end();
-    return;
+    responses.forEach(r => send('chunk', { queryId, model: r.model, token: r.content, isComplete: true }));
+    send('done', { message: 'Complete' });
+    return res.end();
   }
   
-  // Check if stream is active in memory
+  // Live stream
   if (streamManager.isStreamActive(queryId)) {
-    // Subscribe to live stream
-    const unsubscribe = streamManager.subscribe(queryId, {
-      onChunk: (chunk) => {
-        sendEvent('chunk', chunk);
-      },
-      onDone: () => {
-        sendEvent('done', { message: 'Stream completed' });
-        res.end();
-      },
+    const unsub = streamManager.subscribe(queryId, {
+      onChunk: chunk => send('chunk', chunk),
+      onDone: () => { send('done', { message: 'Complete' }); res.end(); },
     });
-    
-    // Handle client disconnect
-    req.on('close', () => {
-      unsubscribe();
-    });
+    req.on('close', unsub);
   } else {
-    // Stream not active, poll database for completion
-    const pollInterval = setInterval(async () => {
-      try {
-        const msg = await ChatMessage.findById(queryId);
-        if (msg?.status === 'completed') {
-          clearInterval(pollInterval);
-          
-          const responses = await ChatMessage.find({ queryId });
-          for (const response of responses) {
-            sendEvent('chunk', {
-              queryId,
-              model: response.model,
-              token: response.content,
-              isComplete: true,
-            });
-          }
-          
-          sendEvent('done', { message: 'Stream completed' });
-          res.end();
-        }
-      } catch (error) {
-        console.error('Poll error:', error);
+    // Poll for completion
+    const poll = setInterval(async () => {
+      const msg = await ChatMessage.findById(queryId);
+      if (msg?.status === 'completed') {
+        clearInterval(poll);
+        const responses = await ChatMessage.find({ queryId });
+        responses.forEach(r => send('chunk', { queryId, model: r.model, token: r.content, isComplete: true }));
+        send('done', { message: 'Complete' });
+        res.end();
       }
     }, 1000);
-    
-    req.on('close', () => {
-      clearInterval(pollInterval);
-    });
+    req.on('close', () => clearInterval(poll));
   }
 });
 
-/**
- * DELETE /session/:chatSessionId - Delete a chat session
- */
+// Delete session
 router.delete('/session/:chatSessionId', isAuthenticated, chatSessionValid, async (req, res) => {
   try {
-    const chatSessionId = req.params.chatSessionId;
-    
-    // Delete all messages in the session
-    await ChatMessage.deleteMany({ chatSessionId });
-    
-    // Delete the session
-    await ChatSession.findByIdAndDelete(chatSessionId);
-    
-    res.status(200).json({ 
-      message: 'Chat session deleted',
-      chatSessionId,
-    });
+    await ChatMessage.deleteMany({ chatSessionId: req.params.chatSessionId });
+    await ChatSession.findByIdAndDelete(req.params.chatSessionId);
+    res.json({ message: 'Deleted', chatSessionId: req.params.chatSessionId });
   } catch (error) {
     console.error('Delete session error:', error);
-    res.status(500).json({ 
-      error: 'Failed to delete chat session',
-      code: 'DELETE_SESSION_ERROR',
-    });
+    res.status(500).json({ error: 'Failed to delete', code: 'DELETE_SESSION_ERROR' });
   }
 });
 
-/**
- * Background streaming function
- * Continues even if client disconnects, saves to DB at intervals
- */
+// Background streaming - continues even if client disconnects
 async function startBackgroundStream(queryMessage, chatSession, account, accountType, creditsRequired) {
   const queryId = queryMessage._id.toString();
   const chatSessionId = chatSession._id.toString();
-  const models = chatSession.models;
+  const { models } = chatSession;
   
-  // Initialize stream in memory
   streamManager.initStream(queryId, {
     chatSessionId,
     models,
@@ -320,122 +201,69 @@ async function startBackgroundStream(queryMessage, chatSession, account, account
     accountType,
   });
   
-  // Track partial saves for each model
   const savedContent = {};
-  for (const model of models) {
-    savedContent[model] = '';
-  }
+  models.forEach(m => savedContent[m] = '');
   
-  // Set up interval-based saving
-  const unsubscribeSave = streamManager.onSave(queryId, async ({ responses, isComplete }) => {
-    try {
-      // Save or update partial responses for each model
-      for (const model of models) {
-        const currentContent = responses[model];
-        
-        // Only save if there's new content
-        if (currentContent.length > savedContent[model].length) {
-          // Find or create the assistant message
-          let assistantMessage = await ChatMessage.findOne({
+  // Save on interval
+  const unsubSave = streamManager.onSave(queryId, async ({ responses, isComplete }) => {
+    for (const model of models) {
+      if (responses[model].length > savedContent[model].length) {
+        await ChatMessage.findOneAndUpdate(
+          { queryId, model, role: 'assistant' },
+          {
+            chatSessionId,
             queryId,
-            model,
             role: 'assistant',
-          });
-          
-          if (assistantMessage) {
-            // Update existing message
-            assistantMessage.content = currentContent;
-            assistantMessage.status = isComplete ? 'completed' : 'incomplete';
-            await assistantMessage.save();
-          } else {
-            // Create new message
-            assistantMessage = new ChatMessage({
-              chatSessionId,
-              queryId,
-              role: 'assistant',
-              model,
-              content: currentContent,
-              status: isComplete ? 'completed' : 'incomplete',
-            });
-            await assistantMessage.save();
-          }
-          
-          savedContent[model] = currentContent;
-        }
+            model,
+            content: responses[model],
+            status: isComplete ? 'completed' : 'incomplete',
+          },
+          { upsert: true }
+        );
+        savedContent[model] = responses[model];
       }
-      
-      // If complete, mark query as completed
-      if (isComplete) {
-        queryMessage.status = 'completed';
-        await queryMessage.save();
-        unsubscribeSave();
-      }
-    } catch (error) {
-      console.error('Save error:', error);
+    }
+    if (isComplete) {
+      queryMessage.status = 'completed';
+      await queryMessage.save();
+      unsubSave();
     }
   });
   
-  // Get previous messages for context
-  const previousMessages = await ChatMessage.find({ chatSessionId })
-    .sort({ createdAt: 1 })
-    .limit(20);
+  // Get context
+  const previousMessages = await ChatMessage.find({ chatSessionId }).sort({ createdAt: 1 }).limit(20);
   
-  // Process each model in parallel
-  const streamPromises = models.map(async (model) => {
+  // Stream all models
+  await Promise.all(models.map(async model => {
     try {
-      // Build messages for this model
-      const contextMessages = previousMessages
-        .filter(msg => !msg.model || msg.model === model)
-        .map(msg => ({
-          role: msg.role,
-          content: msg.content,
-        }))
+      const context = previousMessages
+        .filter(m => !m.model || m.model === model)
+        .map(m => ({ role: m.role, content: m.content }))
         .slice(-10);
       
-      await streamFromModel(model, contextMessages, (token) => {
-        streamManager.appendToken(queryId, model, token);
-      });
-      
-      // Mark model as completed
+      await streamFromModel(model, context, token => streamManager.appendToken(queryId, model, token));
       streamManager.completeModel(queryId, model);
     } catch (error) {
-      console.error(`Stream error for model ${model}:`, error);
-      streamManager.errorModel(queryId, model, `Failed to get response from ${model}`);
+      console.error(`Stream error (${model}):`, error);
+      streamManager.errorModel(queryId, model, `Failed: ${model}`);
     }
-  });
+  }));
   
-  // Wait for all streams to complete
-  await Promise.all(streamPromises);
-  
-  // Deduct credits after completion
-  try {
-    if (account.solanaWallet) {
-      const deductResult = await deductCredits(account, creditsRequired, {
-        chatSessionId,
-        queryId,
-        models,
-      });
-      
-      // Record transaction
-      const transaction = new Transaction({
+  // Deduct credits
+  if (account.solanaWallet) {
+    try {
+      const result = await deductCredits(account, creditsRequired);
+      await new Transaction({
         [accountType === 'user' ? 'userId' : 'guestId']: account._id,
         type: 'query_usage',
         creditsAmount: -creditsRequired,
         status: 'completed',
-        usage: {
-          chatSessionId,
-          queryId,
-          models,
-          costPerModel: 1,
-        },
-        solana: deductResult.signature ? {
-          signature: deductResult.signature,
-        } : undefined,
-      });
-      await transaction.save();
+        usage: { chatSessionId, queryId, models, costPerModel: 1 },
+        solana: result.signature ? { signature: result.signature } : undefined,
+      }).save();
+    } catch (error) {
+      console.error('Credit deduction error:', error);
     }
-  } catch (deductError) {
-    console.error('Credit deduction error:', deductError);
   }
 }
 

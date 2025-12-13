@@ -1,59 +1,29 @@
-/**
- * Title generation utility
- * Generates concise titles for chat sessions
- */
+// Generate chat titles from queries using GPT
 
 const { OpenAI } = require('openai');
 
 let openAI = null;
+const getOpenAI = () => openAI || (openAI = new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
 
-function getOpenAI() {
-  if (!openAI) {
-    openAI = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  }
-  return openAI;
-}
-
-/**
- * Generate a title from a query
- * @param {string} query - The user's query
- * @returns {Promise<string>} - Generated title (3-8 words)
- */
 async function titleFromModel(query) {
-  if (!query || typeof query !== 'string') {
-    return 'New Chat';
-  }
+  if (!query) return 'New Chat';
 
   try {
-    const client = getOpenAI();
-    
-    const response = await client.chat.completions.create({
+    const response = await getOpenAI().chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        {
-          role: 'system',
-          content: 'You generate short, clear titles. Respond with only the title, nothing else.',
-        },
-        {
-          role: 'user',
-          content: `Generate a concise 3-8 word title for this query:\n\n"${query.slice(0, 500)}"`,
-        },
+        { role: 'system', content: 'Generate a short 3-8 word title. Return only the title.' },
+        { role: 'user', content: `Title for: "${query.slice(0, 500)}"` },
       ],
       temperature: 0.3,
       max_tokens: 20,
     });
 
     const title = response.choices[0]?.message?.content?.trim();
-    
-    // Validate and sanitize title
-    if (!title || title.length < 2) {
-      return 'New Chat';
-    }
-    
-    // Remove quotes if present
+    if (!title || title.length < 2) return 'New Chat';
     return title.replace(/^["']|["']$/g, '').slice(0, 100);
   } catch (error) {
-    console.error('Title generation error:', error.message);
+    console.error('Title generation failed:', error.message);
     return 'New Chat';
   }
 }

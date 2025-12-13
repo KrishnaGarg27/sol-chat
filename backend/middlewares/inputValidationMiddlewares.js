@@ -1,12 +1,14 @@
-const joi = require("joi");
+// Request body validation
 
-module.exports.validateInput = function (validationSchema) {
+const Joi = require('joi');
+
+function validateInput(schema) {
   return (req, res, next) => {
-    const { error, value } = validationSchema.validate(req.body);
-    if (error) {
-      return res.status(400).json({ error: error.message });
-    }
+    const { error, value } = schema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message, code: 'VALIDATION_ERROR' });
     req.body = value;
     next();
   };
-};
+}
+
+module.exports = { validateInput };

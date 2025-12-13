@@ -1,10 +1,4 @@
-/**
- * x402 Payment Required Protocol Implementation
- * 
- * Implements HTTP 402 Payment Required for Solana payments.
- * When a user doesn't have enough credits, they receive a 402 response
- * with payment details to complete the transaction on Solana.
- */
+// x402 Payment Required protocol - returns 402 with Solana payment details
 
 const { v4: uuidv4 } = require('uuid');
 const { CREDIT_PRICE_LAMPORTS, PAYMENT_EXPIRY_MS } = require('../config/constants');
@@ -12,24 +6,12 @@ const solanaService = require('./solana');
 
 class X402Facilitator {
   constructor() {
-    this.pendingPayments = new Map(); // In-memory store for development
+    this.pendingPayments = new Map();
   }
 
-  /**
-   * Create a payment request for missing credits
-   * @param {Object} options - Payment request options
-   * @param {number} options.creditsRequired - Number of credits needed
-   * @param {string} options.userId - User or guest ID
-   * @param {string} options.userType - 'user' or 'guest'
-   * @param {string} options.userWallet - User's Solana wallet address (optional)
-   * @returns {Object} - Payment request object
-   */
   createPaymentRequest({ creditsRequired, userId, userType, userWallet }) {
     const reference = uuidv4();
-    const paymentDetails = solanaService.generatePaymentDetails(
-      creditsRequired,
-      CREDIT_PRICE_LAMPORTS
-    );
+    const paymentDetails = solanaService.generatePaymentDetails(creditsRequired, CREDIT_PRICE_LAMPORTS);
     
     const paymentRequest = {
       reference,
@@ -46,37 +28,21 @@ class X402Facilitator {
       createdAt: new Date().toISOString(),
     };
     
-    // Store pending payment
-    this.pendingPayments.set(reference, {
-      ...paymentRequest,
-      status: 'pending',
-    });
+    this.pendingPayments.set(reference, { ...paymentRequest, status: 'pending' });
     
-    // Auto-expire after timeout
+    // Auto-expire
     setTimeout(() => {
       const payment = this.pendingPayments.get(reference);
-      if (payment && payment.status === 'pending') {
-        payment.status = 'expired';
-      }
+      if (payment?.status === 'pending') payment.status = 'expired';
     }, PAYMENT_EXPIRY_MS);
     
     return paymentRequest;
   }
 
-  /**
-   * Get a pending payment by reference
-   * @param {string} reference - Payment reference ID
-   * @returns {Object|null} - Payment request or null
-   */
   getPendingPayment(reference) {
     return this.pendingPayments.get(reference) || null;
   }
 
-  /**
-   * Mark a payment as completed
-   * @param {string} reference - Payment reference ID
-   * @param {string} signature - Solana transaction signature
-   */
   completePayment(reference, signature) {
     const payment = this.pendingPayments.get(reference);
     if (payment) {
@@ -86,11 +52,6 @@ class X402Facilitator {
     }
   }
 
-  /**
-   * Mark a payment as failed
-   * @param {string} reference - Payment reference ID
-   * @param {string} error - Error message
-   */
   failPayment(reference, error) {
     const payment = this.pendingPayments.get(reference);
     if (payment) {
@@ -99,11 +60,6 @@ class X402Facilitator {
     }
   }
 
-  /**
-   * Send 402 Payment Required response
-   * @param {Object} res - Express response object
-   * @param {Object} paymentRequest - Payment request object
-   */
   sendPaymentRequired(res, paymentRequest) {
     res.status(402).json({
       error: 'Payment Required',
@@ -119,33 +75,17 @@ class X402Facilitator {
         expiresAt: paymentRequest.expiresAt,
         verifyUrl: `/api/pay/verify/${paymentRequest.reference}`,
       },
-      message: `You need ${paymentRequest.creditsRequired} more credit(s) to make this query. Please send ${paymentRequest.amount} lamports to ${paymentRequest.recipient} and verify payment.`,
+      message: `Need ${paymentRequest.creditsRequired} credits. Send ${paymentRequest.amount} lamports to ${paymentRequest.recipient}.`,
     });
   }
 
-  /**
-   * Verify payment and return result
-   * @param {string} reference - Payment reference ID
-   * @param {string} signature - Solana transaction signature
-   * @param {string} payerWallet - Wallet that made the payment
-   * @returns {Promise<{success: boolean, credits?: number, error?: string}>}
-   */
   async verifyPayment(reference, signature, payerWallet) {
     const pendingPayment = this.getPendingPayment(reference);
     
-    if (!pendingPayment) {
-      return { success: false, error: 'Payment reference not found' };
-    }
+    if (!pendingPayment) return { success: false, error: 'Payment reference not found' };
+    if (pendingPayment.status === 'completed') return { success: false, error: 'Already processed' };
+    if (pendingPayment.status === 'expired') return { success: false, error: 'Payment expired' };
     
-    if (pendingPayment.status === 'completed') {
-      return { success: false, error: 'Payment already processed' };
-    }
-    
-    if (pendingPayment.status === 'expired') {
-      return { success: false, error: 'Payment request expired' };
-    }
-    
-    // Verify on-chain
     const verification = await solanaService.verifyPayment(
       signature,
       payerWallet,
@@ -168,26 +108,20 @@ class X402Facilitator {
     };
   }
 
-  /**
-   * Clean up old expired payments (call periodically)
-   */
   cleanup() {
     const now = Date.now();
     for (const [reference, payment] of this.pendingPayments.entries()) {
-      const expiresAt = new Date(payment.expiresAt).getTime();
-      // Remove payments expired for more than 1 hour
-      if (now - expiresAt > 60 * 60 * 1000) {
+      // Remove payments expired for over 1 hour
+      if (now - new Date(payment.expiresAt).getTime() > 60 * 60 * 1000) {
         this.pendingPayments.delete(reference);
       }
     }
   }
 }
 
-// Export singleton instance
-module.exports = new X402Facilitator();
+const facilitator = new X402Facilitator();
 
-// Run cleanup every 10 minutes
-setInterval(() => {
-  module.exports.cleanup();
-}, 10 * 60 * 1000);
+// Cleanup every 10 min
+setInterval(() => facilitator.cleanup(), 10 * 60 * 1000);
 
+module.exports = facilitator;
