@@ -8,7 +8,7 @@ const {
   createBurnInstruction,
   getAccount,
 } = require('@solana/spl-token');
-const bs58 = require('bs58');
+const bs58 = require('bs58').default;
 
 class SolanaService {
   constructor() {

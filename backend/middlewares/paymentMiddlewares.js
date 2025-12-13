@@ -83,7 +83,7 @@ async function verifyWalletSignature(req, res, next) {
   
   try {
     const nacl = require('tweetnacl');
-    const bs58 = require('bs58');
+    const bs58 = require('bs58').default;
     
     const isValid = nacl.sign.detached.verify(
       new TextEncoder().encode(message),
