@@ -93,6 +93,7 @@ export function ChatPage() {
           selectedModels={selectedModels}
           onChangeModels={handleModelChange}
           availableModels={availableModels}
+          modelsDisabled={!!session?.chatSessionId}
         />
         <MessageList turns={turns} models={selectedModels} isStreaming={isStreaming} />
         <Composer onSendMessage={handleSendMessage} isStreaming={isStreaming} selectedModels={selectedModels} />
