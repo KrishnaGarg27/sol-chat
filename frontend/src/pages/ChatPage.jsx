@@ -95,7 +95,7 @@ export function ChatPage() {
           availableModels={availableModels}
         />
         <MessageList turns={turns} models={selectedModels} isStreaming={isStreaming} />
-        <Composer onSendMessage={handleSendMessage} isStreaming={isStreaming} />
+        <Composer onSendMessage={handleSendMessage} isStreaming={isStreaming} selectedModels={selectedModels} />
       </main>
 
       <TopUpModal
