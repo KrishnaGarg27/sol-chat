@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Eye, Sparkles } from 'lucide-react'
 import { API_BASE_URL } from '@/api/config'
+import logo from '@/assets/logosol.png'
+import googleIcon from '@/assets/icons8-google.svg'
 
 export function LoginPage() {
   const [mode, setMode] = useState('login')
@@ -61,9 +63,7 @@ export function LoginPage() {
         <div className="absolute bottom-0 left-0 w-96 h-96 bg-primary/30 rounded-full blur-3xl transform -translate-x-1/3 translate-y-1/3" />
 
         <div className="relative z-10 max-w-lg mx-auto flex flex-col gap-8">
-          <div className="w-16 h-16 bg-foreground text-secondary rounded-2xl flex items-center justify-center shadow-xl">
-            <Sparkles className="h-8 w-8" />
-          </div>
+          <img src={logo} alt="Sol-Chat Logo" className="w-20 h-20 rounded-2xl shadow-xl object-contain" />
           <h1 className="text-5xl font-bold leading-tight font-display tracking-tight">
             Sol-Chat x402
           </h1>
@@ -180,11 +180,7 @@ export function LoginPage() {
           </div>
 
           <Button variant="outline" className="w-full h-12 gap-2" onClick={handleGoogleLogin}>
-            <img
-              alt="Google"
-              className="w-5 h-5"
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuAC3uBFMLb1ewzgE4uFPgDnmo5LYzVSc4WhUkiBCYuYiPmtmsqB5JBKrRKyOnblaUz9ydarasscTG3uIhx95KLy4p-ypHDZNBjz9m3RR_U2KmLsn3oAv9CIAGcIHVt5uSHzvLtF6CD7Wu1HoAGPuakYB9t6bQ2XYy6Py_z1decVHwMMYaTXB0kapIWJ9eHk_TuPVJCp2uA5IrEw81fKxGXTSzFHhtLWwKjJnQ-RwJTa4_zTiKt_UpTShvLD00hBlIJaSgOuyZtJ5Uka"
-            />
+            <img src={googleIcon} alt="Google" className="w-5 h-5" />
             Continue with Google
           </Button>
 

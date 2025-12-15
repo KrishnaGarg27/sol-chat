@@ -5,6 +5,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { LogOut, Plus, MessageSquare, History, LogIn } from 'lucide-react'
+import logo from '@/assets/logosol.png'
 
 export function Sidebar({ sessions = [], activeSessionId, onNewSession, onSelectSession }) {
   const { user, guest, logout, isAuthenticated } = useAuth()
@@ -17,6 +18,9 @@ export function Sidebar({ sessions = [], activeSessionId, onNewSession, onSelect
   return (
     <aside className="hidden md:flex w-[280px] shrink-0 h-full flex-col border-r border-border bg-surface">
       <div className="p-4 flex flex-col gap-4">
+        <div className="flex justify-center mb-4">
+          <img src={logo} alt="Sol-Chat Logo" className="h-20 w-auto" />
+        </div>
         <Button onClick={onNewSession} className="w-full h-12 rounded-lg shadow-primary" variant="default">
           <Plus className="h-5 w-5" />
           <span className="text-sm font-bold">New Chat</span>
